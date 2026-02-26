@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import time
@@ -78,3 +79,19 @@ async def _finalize_session(session_id: str, buffer: SessionBuffer, status: str)
         "total_frames": total_frames,
     })
     await db.compute_topic_summaries(session_id)
+
+    # Fire-and-forget: generate text summary, embedding, and metrics vector
+    asyncio.create_task(_generate_ai_features(session_id))
+
+
+async def _generate_ai_features(session_id: str):
+    """Generate text summary, embedding, and metrics vector for a completed session."""
+    try:
+        from server.ai.embeddings import embed_session
+        from server.ai.similarity import compute_metrics_vector
+
+        await embed_session(session_id)
+        await compute_metrics_vector(session_id)
+        logger.info("AI features generated for session %s", session_id)
+    except Exception:
+        logger.warning("AI feature generation failed for session %s", session_id, exc_info=True)

@@ -84,12 +84,13 @@ class SessionBuffer:
                 return None
 
         msg_id = db.next_msg_id()
+        data_type = "image_ref" if image_path else msg["data_type"]
         return [
             msg_id,
             self.session_id,
             msg["timestamp"],
             msg["topic"],
-            msg["data_type"],
+            data_type,
             str(data) if data is not None else None,
             image_path,
             msg.get("frame_index"),

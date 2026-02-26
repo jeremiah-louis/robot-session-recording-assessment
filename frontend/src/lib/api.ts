@@ -124,4 +124,9 @@ export const api = {
   getExportUrl(sessionId: string) {
     return `${BASE}/sessions/${sessionId}/export`;
   },
+
+  getImageUrl(sessionId: string, topic: string, timestamp: number) {
+    const topicPath = topic.startsWith("/") ? topic.slice(1) : topic;
+    return `${BASE}/sessions/${sessionId}/images/${topicPath}/${timestamp}`;
+  },
 };

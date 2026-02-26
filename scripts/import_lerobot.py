@@ -86,13 +86,32 @@ def load_tasks(dataset_dir: Path) -> Dict[int, str]:
     return dict(zip(df["task_index"], df[task_col]))
 
 
-def extract_video_frames(video_path: Path, num_frames: int) -> list:
-    """Decode up to num_frames from an MP4 video file. Returns list of PIL Images."""
+def extract_video_frames(video_path: Path, num_frames: int, start_frame: int = 0) -> list:
+    """Decode up to num_frames from an MP4 video file starting at start_frame.
+
+    Uses keyframe seeking to jump near start_frame efficiently, then decodes
+    forward to the exact position. Returns list of PIL Images.
+    """
     frames = []
     container = av.open(str(video_path))
     try:
         stream = container.streams.video[0]
+
+        # Seek to near start_frame using timestamp-based seeking
+        if start_frame > 0 and stream.average_rate:
+            fps = float(stream.average_rate)
+            target_sec = start_frame / fps
+            # Seek to the nearest keyframe before target_sec
+            target_pts = int(target_sec / stream.time_base)
+            container.seek(target_pts, stream=stream, backward=True)
+
         for frame in container.decode(stream):
+            # After seeking we may land before start_frame; skip until we reach it
+            if frame.pts is not None and stream.average_rate:
+                frame_idx = int(round(float(frame.pts * stream.time_base) * float(stream.average_rate)))
+                if frame_idx < start_frame:
+                    continue
+
             frames.append(frame.to_image())
             if len(frames) >= num_frames:
                 break
@@ -106,22 +125,18 @@ def resolve_video_path(dataset_dir: Path, info: dict, episode_index: int) -> Opt
 
     LeRobot v3.0 organizes videos as:
         videos/{video_key}/chunk-{chunk}/file-{file}.mp4
-    We try the direct path first, then fall back to the template in info.json.
+    Some datasets have one MP4 per episode, others pack all episodes into a
+    single file (file-000.mp4).  We try the per-episode path first, then fall
+    back to the single-file path within the same chunk.
     """
     chunks_size = info.get("chunks_size", 1000)
-
-    # Divide the episode index by the chunks size and round to nearest integer to get the chunk index
     chunk_index = episode_index // chunks_size
+    file_index = episode_index % chunks_size
 
-    # Try direct path: videos/observation.image/chunk-000/file-000.mp4
-    video_path = dataset_dir / f"videos/observation.image/chunk-{chunk_index:03d}/file-{episode_index:03d}.mp4"
-    if video_path.exists():
-        return video_path
-
-    # Fall back to the template pattern from info.json
     video_template = info.get("video_path", "")
+
+    # Try per-episode file first: file-{episode_index}.mp4
     if video_template:
-        file_index = episode_index % chunks_size
         video_path = dataset_dir / video_template.format(
             video_key="observation.image",
             chunk_index=chunk_index,
@@ -129,6 +144,15 @@ def resolve_video_path(dataset_dir: Path, info: dict, episode_index: int) -> Opt
         )
         if video_path.exists():
             return video_path
+
+    direct_path = dataset_dir / f"videos/observation.image/chunk-{chunk_index:03d}/file-{file_index:03d}.mp4"
+    if direct_path.exists():
+        return direct_path
+
+    # Fall back to single-file: file-000.mp4 (all episodes concatenated)
+    single_path = dataset_dir / f"videos/observation.image/chunk-{chunk_index:03d}/file-000.mp4"
+    if single_path.exists():
+        return single_path
 
     return None
 
@@ -276,8 +300,23 @@ def import_episode(
     image_rows = []
 
     if video_path is not None:
-        logger.info("  Extracting video frames from %s", video_path.name)
-        frames = extract_video_frames(video_path, num_frames)
+        # Determine start frame offset.  If this dataset packs all episodes
+        # into a single MP4 (e.g. file-000.mp4 for every episode), we need
+        # to skip to the correct position using the global 'index' field.
+        chunks_size = info.get("chunks_size", 1000)
+        file_index = episode_index % chunks_size
+        is_single_file = (file_index != 0 and video_path.name == "file-000.mp4")
+        # Also treat ep 0 with file-000 as single-file when index field exists
+        if not is_single_file and "index" in episode_data and video_path.name == "file-000.mp4":
+            is_single_file = True
+
+        if is_single_file and "index" in episode_data:
+            start_frame = int(episode_data["index"][0])
+        else:
+            start_frame = 0
+
+        logger.info("  Extracting video frames from %s (start_frame=%d)", video_path.name, start_frame)
+        frames = extract_video_frames(video_path, num_frames, start_frame)
         image_rows, msg_id = build_image_rows(
             frames, episode_data, session_id, timestamps, fps, msg_id,
         )
@@ -316,7 +355,7 @@ def main():
     parser.add_argument("--dataset", default="lerobot/pusht", help="HuggingFace dataset name")
     parser.add_argument("--episodes", type=int, default=50, help="Number of episodes to import")
     parser.add_argument("--skip-download", action="store_true", help="Skip download if already cached")
-    parser.add_argument("--embed", action="store_true", help="Generate AI summaries, embeddings, and metrics after import")
+    parser.add_argument("--embed", action="store_true", help="Generate text summaries, embeddings, and metrics after import")
     args = parser.parse_args()
 
     # Use cached download if available and --skip-download is set
