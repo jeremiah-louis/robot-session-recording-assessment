@@ -5,8 +5,6 @@ __pycache__/
 .env
 data/
 frontend/
-client/
-scripts/
 tests/
 *.egg-info/
 .pytest_cache/
