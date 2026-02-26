@@ -235,11 +235,19 @@ def import_episode(
     extracts video frames if the MP4 exists, and computes topic summaries.
     """
     session_id = f"import-{dataset_name.replace('/', '_')}-ep{episode_index:04d}"
+
+    # Skip if already imported
+    existing = db.conn.execute(
+        "SELECT 1 FROM sessions WHERE session_id = ?", [session_id]
+    ).fetchone()
+    if existing:
+        logger.info("  Skipping episode %d (already imported)", episode_index)
+        return
+
     fps = info["fps"]
     timestamps = episode_data["timestamp"]
     num_frames = len(timestamps)
 
-    # Create session record with metadata derived from the episode
     db.conn.execute(
         """INSERT INTO sessions (session_id, source, dataset_name, episode_index, task,
            robot_type, fps, start_time, end_time, total_frames, status, outcome,
@@ -308,6 +316,7 @@ def main():
     parser.add_argument("--dataset", default="lerobot/pusht", help="HuggingFace dataset name")
     parser.add_argument("--episodes", type=int, default=50, help="Number of episodes to import")
     parser.add_argument("--skip-download", action="store_true", help="Skip download if already cached")
+    parser.add_argument("--embed", action="store_true", help="Generate AI summaries, embeddings, and metrics after import")
     args = parser.parse_args()
 
     # Use cached download if available and --skip-download is set
@@ -348,6 +357,28 @@ def main():
         mask = [i for i, idx in enumerate(episode_indices) if idx == ep_idx]
         episode_data = {col: [df[col][i] for i in mask] for col in df}
         import_episode(dataset_dir, info, tasks, episode_data, ep_idx, args.dataset)
+
+    def make_session_id(ep_idx: int) -> str:
+        return f"import-{args.dataset.replace('/', '_')}-ep{ep_idx:04d}"
+
+    if args.embed:
+        logger.info("Generating AI features (summaries, embeddings, metrics)...")
+        import asyncio
+        from server.ai.embeddings import embed_session
+        from server.ai.similarity import compute_metrics_vector, compute_umap_projection
+
+        async def _embed_all():
+            for ep_idx in unique_episodes:
+                sid = make_session_id(ep_idx)
+                try:
+                    await embed_session(sid)
+                    await compute_metrics_vector(sid)
+                except Exception:
+                    logger.warning("Failed to embed session %s", sid, exc_info=True)
+            await compute_umap_projection([make_session_id(idx) for idx in unique_episodes])
+
+        asyncio.run(_embed_all())
+        logger.info("AI features generated")
 
     db.close()
     logger.info("Import complete: %d episodes imported", len(unique_episodes))
