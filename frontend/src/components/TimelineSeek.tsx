@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, type Message, type TopicSummary } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Play, Pause } from "lucide-react";
+import { Play, Pause, SkipBack, Camera } from "lucide-react";
 
 interface ParsedPoint {
   t: number;
@@ -220,6 +220,84 @@ function drawDataLines(
   ctx.restore();
 }
 
+// -- Camera Frame Viewer ------------------------------------------------------
+
+/** Binary search for the timestamp nearest to `target` in a sorted array. */
+function findNearestTimestamp(timestamps: number[], target: number): number | null {
+  if (timestamps.length === 0) return null;
+  let lo = 0;
+  let hi = timestamps.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (timestamps[mid] < target) lo = mid + 1;
+    else hi = mid;
+  }
+  // Compare lo and lo-1 to find the actual nearest
+  if (lo > 0 && Math.abs(timestamps[lo - 1] - target) < Math.abs(timestamps[lo] - target)) {
+    return timestamps[lo - 1];
+  }
+  return timestamps[lo];
+}
+
+function CameraFrame({
+  sessionId,
+  topic,
+  cursorTime,
+  frameTimestamps,
+}: {
+  sessionId: string;
+  topic: string;
+  cursorTime: number;
+  frameTimestamps: number[];
+}) {
+  const [error, setError] = useState(false);
+
+  const nearestTs = useMemo(
+    () => findNearestTimestamp(frameTimestamps, cursorTime),
+    [frameTimestamps, cursorTime],
+  );
+
+  const imageUrl = nearestTs !== null
+    ? api.getImageUrl(sessionId, topic, nearestTs)
+    : null;
+
+  // Reset error state when URL changes
+  useEffect(() => setError(false), [imageUrl]);
+
+  return (
+    <div className="border border-border rounded-lg bg-card overflow-hidden">
+      <div className="flex items-center gap-2 px-3 py-1.5 border-b border-border bg-muted/30">
+        <Camera className="w-3 h-3 text-muted-foreground" />
+        <span className="text-[10px] font-mono text-muted-foreground uppercase tracking-wider">
+          {topic}
+        </span>
+        {nearestTs !== null && (
+          <span className="text-[10px] font-mono text-muted-foreground ml-auto tabular-nums">
+            {nearestTs.toFixed(3)}s
+          </span>
+        )}
+      </div>
+      <div className="flex items-center justify-center bg-black/40 min-h-[120px]">
+        {error && (
+          <span className="text-xs text-muted-foreground">Frame unavailable</span>
+        )}
+        {!error && imageUrl && (
+          <img
+            src={imageUrl}
+            alt={`Camera frame at ${nearestTs?.toFixed(3)}s`}
+            className="max-h-[200px] w-auto object-contain"
+            style={{ imageRendering: "pixelated" }}
+            onError={() => setError(true)}
+          />
+        )}
+        {!error && !imageUrl && (
+          <Skeleton className="h-24 w-24 rounded" />
+        )}
+      </div>
+    </div>
+  );
+}
+
 // -- Component ----------------------------------------------------------------
 
 interface Props {
@@ -229,7 +307,8 @@ interface Props {
 }
 
 export function TimelineSeek({ sessionId, topics, duration }: Props) {
-  const [range, setRange] = useState<[number, number]>([0, Math.min(5, duration)]);
+  const defaultWindow = duration <= 2 ? duration : Math.min(2, duration);
+  const [range, setRange] = useState<[number, number]>([0, defaultWindow]);
   const [playing, setPlaying] = useState(false);
   const [loading, setLoading] = useState(false);
   const animRef = useRef<number | undefined>(undefined);
@@ -239,9 +318,15 @@ export function TimelineSeek({ sessionId, topics, duration }: Props) {
     start: number;
     end: number;
     grouped: Record<string, ParsedPoint[]>;
-  }>({ start: 0, end: 0, grouped: {} });
+    imageTimestamps: Record<string, number[]>;
+  }>({ start: 0, end: 0, grouped: {}, imageTimestamps: {} });
   const [bufferVersion, setBufferVersion] = useState(0);
   const fetchingRef = useRef(false);
+
+  const imageTopics = useMemo(
+    () => topics.filter((t) => t.data_type === "image_ref"),
+    [topics],
+  );
 
   const numericTopics = useMemo(
     () => topics.filter((t) => t.data_type !== "image_ref"),
@@ -251,6 +336,11 @@ export function TimelineSeek({ sessionId, topics, duration }: Props) {
   const topicNames = useMemo(
     () => numericTopics.map((t) => t.topic),
     [numericTopics],
+  );
+
+  const allTopicNames = useMemo(
+    () => topics.map((t) => t.topic),
+    [topics],
   );
 
   const fetchBuffer = useCallback(
@@ -265,22 +355,39 @@ export function TimelineSeek({ sessionId, topics, duration }: Props) {
       const bufEnd = Math.min(duration, visEnd + bufferPad);
 
       try {
-        const msgs = await api.seek(sessionId, bufStart, bufEnd, topicNames, 10000);
-        bufferRef.current = { start: bufStart, end: bufEnd, grouped: groupMessages(msgs) };
+        const msgs = await api.seek(sessionId, bufStart, bufEnd, allTopicNames, 10000);
+
+        // Extract sorted image timestamps per topic
+        const imageTimestamps: Record<string, number[]> = {};
+        for (const m of msgs) {
+          if (m.data_type === "image_ref" && m.image_path) {
+            (imageTimestamps[m.topic] ??= []).push(m.timestamp);
+          }
+        }
+        for (const ts of Object.values(imageTimestamps)) {
+          ts.sort((a, b) => a - b);
+        }
+
+        bufferRef.current = {
+          start: bufStart,
+          end: bufEnd,
+          grouped: groupMessages(msgs),
+          imageTimestamps,
+        };
         setBufferVersion((v) => v + 1);
       } finally {
         fetchingRef.current = false;
         setLoading(false);
       }
     },
-    [sessionId, topicNames, duration],
+    [sessionId, allTopicNames, duration],
   );
 
   // Initial fetch + re-fetch when topics change
   useEffect(() => {
     fetchBuffer(range[0], range[1]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId, topicNames.join(",")]);
+  }, [sessionId, allTopicNames.join(",")]);
 
   // Re-fetch when the visible window approaches the buffer edge
   useEffect(() => {
@@ -290,8 +397,8 @@ export function TimelineSeek({ sessionId, topics, duration }: Props) {
 
     const needsFetch =
       buf.start === buf.end ||
-      range[0] < buf.start + threshold ||
-      range[1] > buf.end - threshold;
+      (range[0] < buf.start + threshold && buf.start > 0) ||
+      (range[1] > buf.end - threshold && buf.end < duration);
 
     if (needsFetch) {
       fetchBuffer(range[0], range[1]);
@@ -342,6 +449,17 @@ export function TimelineSeek({ sessionId, topics, duration }: Props) {
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-4">
+        <Button
+          variant="outline"
+          size="icon"
+          onClick={() => {
+            setPlaying(false);
+            setRange([0, range[1] - range[0]]);
+          }}
+          className="h-8 w-8"
+        >
+          <SkipBack className="w-3.5 h-3.5" />
+        </Button>
         <Button
           variant="outline"
           size="icon"
@@ -405,6 +523,20 @@ export function TimelineSeek({ sessionId, topics, duration }: Props) {
           style={{ height: 220 }}
         />
       </div>
+
+      {imageTopics.length > 0 && (
+        <div className="grid gap-3" style={{ gridTemplateColumns: `repeat(${Math.min(imageTopics.length, 3)}, 1fr)` }}>
+          {imageTopics.map((t) => (
+            <CameraFrame
+              key={t.topic}
+              sessionId={sessionId}
+              topic={t.topic}
+              cursorTime={(range[0] + range[1]) / 2}
+              frameTimestamps={bufferRef.current.imageTimestamps[t.topic] ?? []}
+            />
+          ))}
+        </div>
+      )}
 
       <div className="flex flex-wrap gap-2">
         {numericTopics.map((t) => (

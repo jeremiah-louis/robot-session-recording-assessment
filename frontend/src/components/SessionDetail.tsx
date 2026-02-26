@@ -92,10 +92,12 @@ export function SessionDetail() {
         <Button
           variant="outline"
           size="sm"
-          onClick={() => window.open(api.getExportUrl(session.session_id))}
+          asChild
         >
-          <Download className="w-3.5 h-3.5 mr-1.5" />
-          Export
+          <a href={api.getExportUrl(session.session_id)} download>
+            <Download className="w-3.5 h-3.5 mr-1.5" />
+            Export
+          </a>
         </Button>
       </div>
 
@@ -141,7 +143,7 @@ export function SessionDetail() {
       {session.summary && (
         <div className="border border-border rounded-lg p-4 bg-card">
           <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">
-            AI Summary
+            Text Summary
           </h4>
           <p className="text-sm leading-relaxed">{session.summary}</p>
         </div>
