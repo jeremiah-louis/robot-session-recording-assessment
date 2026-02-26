@@ -1,4 +1,5 @@
 import asyncio
+from contextlib import contextmanager
 from typing import Any, Dict, List, Optional
 
 import duckdb
@@ -84,11 +85,21 @@ class Database:
             raise RuntimeError("Database not connected")
         return self._conn
 
+    @contextmanager
+    def _cursor(self):
+        """Thread-safe cursor — each caller gets its own so concurrent reads don't collide."""
+        cursor = self.conn.cursor()
+        try:
+            yield cursor
+        finally:
+            cursor.close()
+
     async def read(self, query: str, params: Optional[list] = None) -> List[Dict[str, Any]]:
         def _exec():
-            result = self.conn.execute(query, params or [])
-            columns = [desc[0] for desc in result.description]
-            return [dict(zip(columns, row)) for row in result.fetchall()]
+            with self._cursor() as cur:
+                result = cur.execute(query, params or [])
+                columns = [desc[0] for desc in result.description]
+                return [dict(zip(columns, row)) for row in result.fetchall()]
         return await asyncio.to_thread(_exec)
 
     async def read_one(self, query: str, params: Optional[list] = None) -> Optional[Dict[str, Any]]:
@@ -97,11 +108,17 @@ class Database:
 
     async def write(self, query: str, params: Optional[list] = None):
         async with self._write_lock:
-            await asyncio.to_thread(self.conn.execute, query, params or [])
+            def _exec():
+                with self._cursor() as cur:
+                    cur.execute(query, params or [])
+            await asyncio.to_thread(_exec)
 
     async def write_many(self, query: str, params_list: List[list]):
         async with self._write_lock:
-            await asyncio.to_thread(self.conn.executemany, query, params_list)
+            def _exec():
+                with self._cursor() as cur:
+                    cur.executemany(query, params_list)
+            await asyncio.to_thread(_exec)
 
     def next_msg_id(self) -> int:
         self._msg_counter += 1
