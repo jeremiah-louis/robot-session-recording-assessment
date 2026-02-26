@@ -34,6 +34,88 @@ npm install
 npm run dev
 ```
 
+## CLI Scripts
+
+### `client/mock_robot.py` — Stream live mock telemetry
+
+Simulates a 6-DOF robot streaming joint states, gripper feedback, and camera frames over WebSocket.
+
+```bash
+python -m client.mock_robot [flags]
+```
+
+| Flag | Default | Description |
+| --- | --- | --- |
+| `--server-url` | `ws://localhost:8000/ws/ingest` | WebSocket endpoint to connect to |
+| `--duration` | `60.0` | How long to stream in seconds |
+| `--session-id` | auto-generated | Session ID to use (e.g. `live-abc123`); random if omitted |
+
+Examples:
+
+```bash
+# 30-second stream with a custom session ID
+python -m client.mock_robot --duration 30 --session-id test-run-01
+
+# Point at a non-default server
+python -m client.mock_robot --server-url ws://192.168.1.10:8000/ws/ingest
+```
+
+---
+
+### `scripts/import_lerobot.py` — Import a LeRobot dataset
+
+Downloads a dataset from Hugging Face, extracts telemetry + video frames, and inserts them as sessions into DuckDB. One session per episode.
+
+```bash
+python scripts/import_lerobot.py [flags]
+```
+
+| Flag | Default | Description |
+| --- | --- | --- |
+| `--dataset` | `lerobot/pusht` | Hugging Face dataset repo ID |
+| `--episodes` | `50` | Maximum number of episodes to import |
+| `--skip-download` | off | Reuse a previously cached download instead of re-fetching |
+| `--embed` | off | After import, generate AI summaries, embeddings, metrics vectors, and UMAP coords in one pass |
+
+Examples:
+
+```bash
+# Import 100 episodes of pusht
+python scripts/import_lerobot.py --dataset lerobot/pusht --episodes 100
+
+# Re-import from cache and generate AI features immediately
+python scripts/import_lerobot.py --skip-download --embed
+
+# Import a different dataset
+python scripts/import_lerobot.py --dataset lerobot/aloha_sim_insertion_human --episodes 25
+```
+
+---
+
+### `scripts/seed_embeddings.py` — Backfill AI features
+
+Generates summaries, OpenAI embeddings, metrics vectors, and UMAP coordinates for every session already in the database. Useful after a bulk import without `--embed`, or to refresh stale data.
+
+```bash
+python -m scripts.seed_embeddings [flags]
+```
+
+| Flag | Default | Description |
+| --- | --- | --- |
+| `--batch-size` | `50` | Number of sessions to embed per OpenAI API call |
+
+Examples:
+
+```bash
+# Seed with default batch size
+python -m scripts.seed_embeddings
+
+# Use smaller batches to stay under rate limits
+python -m scripts.seed_embeddings --batch-size 20
+```
+
+---
+
 ## Key Features
 
 - **Live Ingestion**: WebSocket endpoint streams telemetry with backpressure handling
