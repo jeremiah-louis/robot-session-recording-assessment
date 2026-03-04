@@ -164,17 +164,22 @@ async def get_similarity_graph() -> Dict[str, Any]:
             vecs[r["session_id"]] = np.array(mv, dtype=np.float64)
 
     sids = list(vecs.keys())
-    for i in range(len(sids)):
-        for j in range(i + 1, len(sids)):
-            a, b = vecs[sids[i]], vecs[sids[j]]
-            norm_a, norm_b = np.linalg.norm(a), np.linalg.norm(b)
-            if norm_a > 0 and norm_b > 0:
-                sim = float(np.dot(a, b) / (norm_a * norm_b))
-                if sim >= settings.similarity_threshold:
-                    edges.append({
-                        "source": sids[i],
-                        "target": sids[j],
-                        "weight": round(sim, 4),
-                    })
+    if sids:
+        matrix = np.array([vecs[sid] for sid in sids], dtype=np.float64)
+        norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+        # Avoid division by zero for zero-norm vectors
+        norms[norms == 0] = 1.0
+        normalized = matrix / norms
+        sim_matrix = normalized @ normalized.T
+        # Extract upper triangle pairs above threshold
+        i_indices, j_indices = np.where(
+            np.triu(sim_matrix >= settings.similarity_threshold, k=1)
+        )
+        for i, j in zip(i_indices, j_indices):
+            edges.append({
+                "source": sids[i],
+                "target": sids[j],
+                "weight": round(float(sim_matrix[i, j]), 4),
+            })
 
     return {"nodes": nodes, "edges": edges}
