@@ -1,4 +1,5 @@
 import json
+import re
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
@@ -38,5 +39,5 @@ async def export_session(session_id: str):
     return Response(
         content=json.dumps(export_data, default=str, indent=2),
         media_type="application/json",
-        headers={"Content-Disposition": f"attachment; filename={session_id}.json"},
+        headers={"Content-Disposition": f'attachment; filename="{re.sub(r"[^a-zA-Z0-9_.-]", "_", session_id)}.json"'},
     )
