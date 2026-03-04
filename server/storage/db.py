@@ -7,6 +7,8 @@ import duckdb
 from server.config import settings
 
 SCHEMA_SQL = """
+CREATE SEQUENCE IF NOT EXISTS msg_id_seq;
+
 CREATE TABLE IF NOT EXISTS sessions (
     session_id    VARCHAR PRIMARY KEY,
     source        VARCHAR NOT NULL,
@@ -65,7 +67,6 @@ class Database:
     def __init__(self):
         self._conn: Optional[duckdb.DuckDBPyConnection] = None
         self._write_lock = asyncio.Lock()
-        self._msg_counter = 0
 
     def connect(self):
         settings.data_dir.mkdir(parents=True, exist_ok=True)
@@ -121,12 +122,25 @@ class Database:
             await asyncio.to_thread(_exec)
 
     def next_msg_id(self) -> int:
-        self._msg_counter += 1
-        return self._msg_counter
+        result = self.conn.execute("SELECT nextval('msg_id_seq')").fetchone()
+        return result[0]
 
     # --- Session helpers ---
 
+    _SESSION_COLUMNS = frozenset({
+        "session_id", "source", "dataset_name", "episode_index", "task",
+        "robot_type", "fps", "start_time", "end_time", "total_frames",
+        "status", "outcome", "total_reward", "features", "summary",
+        "embedding", "metrics_vec", "umap_x", "umap_y", "created_at",
+    })
+
+    def _validate_columns(self, keys: Any) -> None:
+        invalid = set(keys) - self._SESSION_COLUMNS
+        if invalid:
+            raise ValueError(f"Invalid column names: {invalid}")
+
     async def create_session(self, session: Dict[str, Any]):
+        self._validate_columns(session.keys())
         cols = ", ".join(session.keys())
         placeholders = ", ".join(["?"] * len(session))
         await self.write(
@@ -135,6 +149,7 @@ class Database:
         )
 
     async def update_session(self, session_id: str, updates: Dict[str, Any]):
+        self._validate_columns(updates.keys())
         set_clause = ", ".join(f"{k} = ?" for k in updates.keys())
         await self.write(
             f"UPDATE sessions SET {set_clause} WHERE session_id = ?",
