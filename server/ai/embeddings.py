@@ -15,6 +15,11 @@ _client: Optional[AsyncOpenAI] = None
 def _get_client() -> AsyncOpenAI:
     global _client
     if _client is None:
+        if not settings.openai_api_key:
+            raise RuntimeError(
+                "ROBOT_OPENAI_API_KEY is not set. AI features (search, embeddings, similarity) "
+                "require a valid OpenAI API key. Set it in your .env file or environment."
+            )
         _client = AsyncOpenAI(api_key=settings.openai_api_key)
     return _client
 

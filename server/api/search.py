@@ -1,14 +1,19 @@
+import logging
+
 from fastapi import APIRouter, HTTPException, Query
 
 from server.ai.search import find_similar_sessions, search_sessions
 from server.ai.similarity import get_similarity_graph
 from server.api.sessions import _row_to_session
+from server.errors import ExternalServiceError, NotFoundError
 from server.storage.db import db
 from server.storage.models import (
     SearchRequest,
     SearchResult,
     SimilarityGraphResponse,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["search"])
 
@@ -22,7 +27,14 @@ def _row_to_search_result(row: dict) -> SearchResult:
 @router.post("/sessions/search", response_model=list[SearchResult])
 async def nl_search(request: SearchRequest):
     """Natural language search over session summaries using embeddings."""
-    rows = await search_sessions(request.query, request.limit)
+    try:
+        rows = await search_sessions(request.query, request.limit)
+    except Exception as exc:
+        raise ExternalServiceError(
+            "OpenAI",
+            "Failed to generate search embedding. Is ROBOT_OPENAI_API_KEY set?",
+            detail=str(exc),
+        ) from exc
     return [_row_to_search_result(row) for row in rows]
 
 
@@ -41,7 +53,14 @@ async def similar_sessions(
     """Find sessions similar to a given session."""
     session = await db.get_session(session_id)
     if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
+        raise NotFoundError("Session", session_id)
 
-    rows = await find_similar_sessions(session_id, limit)
+    try:
+        rows = await find_similar_sessions(session_id, limit)
+    except Exception as exc:
+        raise ExternalServiceError(
+            "OpenAI",
+            "Failed to find similar sessions",
+            detail=str(exc),
+        ) from exc
     return [_row_to_search_result(row) for row in rows]

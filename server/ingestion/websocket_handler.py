@@ -6,6 +6,7 @@ from typing import Dict
 
 from fastapi import WebSocket, WebSocketDisconnect
 
+from server.errors import send_ws_error
 from server.ingestion.buffer import SessionBuffer
 from server.storage.db import db
 
@@ -23,11 +24,22 @@ async def handle_ingest(ws: WebSocket):
     try:
         while True:
             raw = await ws.receive_text()
-            msg = json.loads(raw)
+
+            try:
+                msg = json.loads(raw)
+            except (json.JSONDecodeError, ValueError) as exc:
+                logger.warning("Malformed JSON from client (session=%s): %s", session_id, exc)
+                await send_ws_error(ws, "Invalid JSON message", code="invalid_json")
+                continue
+
             msg_type = msg.get("type")
 
             if msg_type == "session_start":
-                session_id = msg["session_id"]
+                sid = msg.get("session_id")
+                if not sid:
+                    await send_ws_error(ws, "session_start requires 'session_id'", code="missing_field")
+                    continue
+                session_id = sid
                 await db.create_session({
                     "session_id": session_id,
                     "source": "live",
@@ -42,7 +54,15 @@ async def handle_ingest(ws: WebSocket):
                 _active_buffers[session_id] = buffer
                 logger.info("Session started: %s", session_id)
 
-            elif msg_type == "message" and buffer:
+            elif msg_type == "message":
+                if not buffer:
+                    await send_ws_error(ws, "Send 'session_start' before sending messages", code="no_session")
+                    continue
+                # Validate required fields
+                missing = [f for f in ("topic", "timestamp") if f not in msg]
+                if missing:
+                    await send_ws_error(ws, f"Message missing required fields: {missing}", code="missing_field")
+                    continue
                 accepted = await buffer.put(msg)
                 if not accepted:
                     await ws.send_json({"type": "backpressure", "action": "slow_down"})
@@ -51,6 +71,9 @@ async def handle_ingest(ws: WebSocket):
                 await _finalize_session(session_id, buffer, "completed")
                 logger.info("Session ended: %s", session_id)
                 break
+
+            else:
+                await send_ws_error(ws, f"Unknown message type: {msg_type}", code="unknown_type")
 
     except WebSocketDisconnect:
         if session_id:
@@ -80,18 +103,29 @@ async def _finalize_session(session_id: str, buffer: SessionBuffer, status: str)
     })
     await db.compute_topic_summaries(session_id)
 
-    # Fire-and-forget: generate text summary, embedding, and metrics vector
-    asyncio.create_task(_generate_ai_features(session_id))
+    # Generate AI features in background — task stored so exceptions are not silently lost
+    task = asyncio.create_task(_generate_ai_features(session_id))
+    task.add_done_callback(lambda t: _handle_task_result(t, session_id))
+
+
+def _handle_task_result(task: asyncio.Task, session_id: str) -> None:
+    """Callback to log background task failures instead of losing them."""
+    if task.cancelled():
+        logger.info("AI feature task cancelled for session %s", session_id)
+    elif exc := task.exception():
+        logger.error("AI feature task failed for session %s: %s", session_id, exc, exc_info=exc)
 
 
 async def _generate_ai_features(session_id: str):
     """Generate text summary, embedding, and metrics vector for a completed session."""
-    try:
-        from server.ai.embeddings import embed_session
-        from server.ai.similarity import compute_metrics_vector
+    from server.ai.embeddings import embed_session
+    from server.ai.similarity import compute_metrics_vector
 
+    try:
         await embed_session(session_id)
         await compute_metrics_vector(session_id)
+        await db.update_session(session_id, {"ai_features_complete": True})
         logger.info("AI features generated for session %s", session_id)
     except Exception:
-        logger.warning("AI feature generation failed for session %s", session_id, exc_info=True)
+        logger.exception("AI feature generation failed for session %s", session_id)
+        await db.update_session(session_id, {"ai_features_complete": False})

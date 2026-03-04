@@ -28,6 +28,10 @@ class Settings(BaseSettings):
     umap_n_neighbors: int = 15
     umap_min_dist: float = 0.1
 
+    # Error handling
+    debug: bool = False  # When True, include stack traces in API responses
+    log_level: str = "INFO"
+
     model_config = {
         "env_prefix": "ROBOT_",
         "env_file": ".env",

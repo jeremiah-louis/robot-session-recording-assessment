@@ -1,7 +1,8 @@
 from typing import List
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 
+from server.errors import NotFoundError
 from server.storage.db import db
 from server.storage.models import Message, SeekRequest
 
@@ -12,7 +13,7 @@ router = APIRouter(prefix="/sessions", tags=["seek"])
 async def seek(session_id: str, req: SeekRequest):
     session = await db.get_session(session_id)
     if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
+        raise NotFoundError("Session", session_id)
 
     rows = await db.seek_messages(
         session_id,

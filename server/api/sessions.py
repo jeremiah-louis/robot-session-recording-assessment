@@ -1,8 +1,9 @@
 import json
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Query
 
+from server.errors import NotFoundError
 from server.storage.db import db
 from server.storage.models import Session, SessionListResponse
 
@@ -47,5 +48,5 @@ async def list_sessions(
 async def get_session(session_id: str):
     row = await db.get_session(session_id)
     if not row:
-        raise HTTPException(status_code=404, detail="Session not found")
+        raise NotFoundError("Session", session_id)
     return _row_to_session(row)

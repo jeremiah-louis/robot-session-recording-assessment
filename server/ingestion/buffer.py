@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import json
 import logging
 from typing import List, Optional
 
@@ -46,8 +47,13 @@ class SessionBuffer:
 
     async def _flush_loop(self):
         while self._running:
-            await asyncio.sleep(settings.buffer_flush_interval)
-            await self._drain(settings.buffer_flush_size)
+            try:
+                await asyncio.sleep(settings.buffer_flush_interval)
+                await self._drain(settings.buffer_flush_size)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Flush loop error for session %s, will retry next interval", self.session_id)
 
     async def _drain(self, max_items: Optional[int] = None):
         """Drain up to max_items from the queue and insert them. Drains all if max_items is None."""
@@ -80,18 +86,36 @@ class SessionBuffer:
                 )
                 data = None
             except Exception:
-                logger.exception("Failed to decode image for session %s", self.session_id)
-                return None
+                logger.exception("Failed to decode image for session %s, storing message without image", self.session_id)
 
         msg_id = db.next_msg_id()
         data_type = "image_ref" if image_path else msg["data_type"]
+
+        serialized_data = None
+        if data is not None:
+            try:
+                serialized_data = json.dumps(data)
+            except (TypeError, ValueError):
+                logger.warning(
+                    "Non-serializable data for session %s, falling back to str coercion",
+                    self.session_id,
+                )
+                try:
+                    serialized_data = json.dumps(data, default=str)
+                except (TypeError, ValueError):
+                    logger.warning(
+                        "Circular reference or unserializable data for session %s, using repr fallback",
+                        self.session_id,
+                    )
+                    serialized_data = json.dumps(repr(data))
+
         return [
             msg_id,
             self.session_id,
             msg["timestamp"],
             msg["topic"],
             data_type,
-            str(data) if data is not None else None,
+            serialized_data,
             image_path,
             msg.get("frame_index"),
         ]

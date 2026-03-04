@@ -1,9 +1,10 @@
 import json
 import re
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 from fastapi.responses import Response
 
+from server.errors import NotFoundError
 from server.storage.db import db
 
 router = APIRouter(prefix="/sessions", tags=["export"])
@@ -22,7 +23,7 @@ def _clean_session_dict(session: dict) -> dict:
 async def export_session(session_id: str):
     session = await db.get_session(session_id)
     if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
+        raise NotFoundError("Session", session_id)
 
     messages = await db.read(
         "SELECT * FROM messages WHERE session_id = ? ORDER BY timestamp ASC",

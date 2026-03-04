@@ -1,7 +1,8 @@
 from typing import List
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 
+from server.errors import NotFoundError
 from server.storage.db import db
 from server.storage.models import TopicSummary
 
@@ -12,6 +13,6 @@ router = APIRouter(prefix="/sessions", tags=["topics"])
 async def get_topics(session_id: str):
     session = await db.get_session(session_id)
     if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
+        raise NotFoundError("Session", session_id)
     rows = await db.get_topics(session_id)
     return [TopicSummary(**r) for r in rows]

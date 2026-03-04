@@ -4,10 +4,12 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, WebSocket
 
 from server.api import export, images, search, seek, sessions, topics
+from server.config import settings
+from server.errors import register_error_handlers
 from server.ingestion.websocket_handler import handle_ingest
 from server.storage.db import db
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=getattr(logging, settings.log_level.upper(), logging.INFO))
 
 
 @asynccontextmanager
@@ -20,6 +22,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Robot Session Recording API", lifespan=lifespan)
+
+register_error_handlers(app)
 
 app.include_router(export.router)
 app.include_router(images.router)
